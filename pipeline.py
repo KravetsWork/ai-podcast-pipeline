@@ -22,6 +22,11 @@ import shutil
 import argparse
 from pathlib import Path
 from typing import Optional, Tuple
+from edge_tts.communicate import (
+    escape as xml_escape,
+    remove_incompatible_characters,
+    split_text_by_byte_length,
+)
 
 import requests
 from dotenv import load_dotenv
@@ -52,6 +57,9 @@ TTS_VOICE = os.getenv("TTS_VOICE", "en-US-AndrewMultilingualNeural")
 TTS_RATE = os.getenv("TTS_RATE", "+0%")
 TTS_PITCH = os.getenv("TTS_PITCH", "+0Hz")
 TTS_VOLUME = os.getenv("TTS_VOLUME", "+0%")
+TTS_CONCURRENCY = int(os.getenv("TTS_CONCURRENCY", "2"))
+TTS_RETRIES = int(os.getenv("TTS_RETRIES", "6"))
+TTS_DEBUG = os.getenv("TTS_DEBUG", "true").strip().lower() in ("true", "1", "yes")
 
 DEFAULT_ARTIST = os.getenv("DEFAULT_ARTIST", "AI")
 DEFAULT_ALBUM_ARTIST = os.getenv("DEFAULT_ALBUM_ARTIST", "AI")
@@ -109,10 +117,12 @@ async def synthesize_speech(
     rate: str = TTS_RATE,
     pitch: str = TTS_PITCH,
     volume: str = TTS_VOLUME,
+    concurrency: int = TTS_CONCURRENCY,
+    debug: bool = TTS_DEBUG,
 ) -> bool:
-    """Synthesizes text into MP3 using edge-tts with real-time percentage progress."""
+    """Synthesizes text into MP3 using edge-tts with concurrent chunk synthesis and real-time percentage progress."""
     try:
-        with open(text_path, "r", encoding="utf-8") as f:
+        with open(text_path, "r", encoding="utf-8-sig") as f:
             text = f.read().strip()
 
         if not text:
@@ -120,19 +130,100 @@ async def synthesize_speech(
             return False
 
         output_audio_path.parent.mkdir(parents=True, exist_ok=True)
-        communicate = edge_tts.Communicate(
-            text=text,
-            voice=voice,
-            rate=rate,
-            pitch=pitch,
-            volume=volume,
-        )
 
-        # Convert internal chunk generator to a list to calculate exact byte total
-        chunks = list(communicate.texts)
-        communicate.texts = iter(chunks)
+        # Normalize whitespace runs and split into 3500-byte XML-escaped chunks to minimize total WebSocket connections.
+        cleaned_text = re.sub(r"\n{3,}", "\n\n", remove_incompatible_characters(text))
+        chunks = list(split_text_by_byte_length(xml_escape(cleaned_text), 3500))
+        if not chunks:
+            console.print(f"[yellow]⚠️ Script file has no synthesizable text: {text_path}[/yellow]")
+            return False
+
         total_bytes = max(sum(len(c) for c in chunks), 1)
-        processed_bytes = 0
+        completed_bytes = [0] * len(chunks)
+        results = [b""] * len(chunks)
+        worker_count = max(1, concurrency)
+        semaphore = asyncio.Semaphore(worker_count)
+
+        # Rate-limit gate: never open more than 1 new WebSocket every 0.8s, and pause all new connections during cooldown.
+        connect_lock = asyncio.Lock()
+        last_connect_ts = 0.0
+        cooldown_until = 0.0
+        start_ts = time.monotonic()
+
+        if debug:
+            console.print(
+                f"[dim]🔍 [DEBUG] Split '{text_path.name}' into {len(chunks)} chunks "
+                f"({total_bytes:,} escaped bytes), concurrency={worker_count}, retries={TTS_RETRIES}[/dim]"
+            )
+
+        async def throttle_connect():
+            nonlocal last_connect_ts
+            async with connect_lock:
+                now = time.monotonic()
+                if cooldown_until > now:
+                    await asyncio.sleep(cooldown_until - now)
+                now = time.monotonic()
+                wait = (last_connect_ts + 0.8) - now
+                if wait > 0:
+                    await asyncio.sleep(wait)
+                last_connect_ts = time.monotonic()
+
+        async def synth_chunk(idx: int, chunk_bytes: bytes):
+            nonlocal cooldown_until
+            async with semaphore:
+                chunk_len = len(chunk_bytes)
+                for attempt in range(1, TTS_RETRIES + 1):
+                    await throttle_connect()
+                    t0 = time.monotonic()
+                    try:
+                        comm = edge_tts.Communicate(
+                            text="",
+                            voice=voice,
+                            rate=rate,
+                            pitch=pitch,
+                            volume=volume,
+                            connect_timeout=10,
+                            receive_timeout=20,
+                        )
+                        comm.texts = [chunk_bytes]
+                        buf = bytearray()
+                        seen_bytes = 0
+                        async for message in comm.stream():
+                            if message["type"] == "audio":
+                                buf.extend(message["data"])
+                            elif message["type"] in ("WordBoundary", "SentenceBoundary"):
+                                b_len = len(message.get("text", "").encode("utf-8")) + 1
+                                seen_bytes = min(seen_bytes + b_len, chunk_len)
+                                completed_bytes[idx] = seen_bytes
+                                progress.update(task_id, completed=sum(completed_bytes))
+                        if not buf:
+                            raise RuntimeError("No audio received for chunk")
+                        results[idx] = bytes(buf)
+                        completed_bytes[idx] = chunk_len
+                        progress.update(task_id, completed=sum(completed_bytes))
+                        if debug:
+                            done_cnt = sum(1 for r in results if r)
+                            progress.console.print(
+                                f"[dim]  ✓ [+{time.monotonic()-start_ts:5.1f}s] Chunk {idx+1:02d}/{len(chunks):02d} "
+                                f"({chunk_len}B txt -> {len(buf)//1024}KB mp3 in {time.monotonic()-t0:.1f}s, "
+                                f"try {attempt}) [{done_cnt}/{len(chunks)}][/dim]"
+                            )
+                        return
+                    except Exception as err:
+                        completed_bytes[idx] = 0
+                        progress.update(task_id, completed=sum(completed_bytes))
+                        # Microsoft Edge-TTS temporary IP rate-limit lasts ~60-90s; wait long enough to clear it
+                        backoff = 20.0 * attempt
+                        cooldown_until = max(cooldown_until, time.monotonic() + backoff)
+                        if debug or attempt >= 1:
+                            progress.console.print(
+                                f"[yellow]  ↻ [+{time.monotonic()-start_ts:5.1f}s] Chunk {idx+1:02d}/{len(chunks):02d} "
+                                f"attempt {attempt}/{TTS_RETRIES} failed ({type(err).__name__}: {err}) — "
+                                f"retrying after {backoff:.0f}s rate-limit cooldown...[/yellow]"
+                            )
+                        if attempt == TTS_RETRIES:
+                            raise
+                        await asyncio.sleep(backoff)
 
         with Progress(
             SpinnerColumn(),
@@ -146,14 +237,17 @@ async def synthesize_speech(
             console=console,
         ) as progress:
             task_id = progress.add_task(f"Synthesizing speech with {voice}...", total=total_bytes)
+            tasks = [asyncio.ensure_future(synth_chunk(i, c)) for i, c in enumerate(chunks)]
+            try:
+                await asyncio.gather(*tasks)
+            except BaseException:
+                for t in tasks:
+                    t.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                raise
             with open(output_audio_path, "wb") as audio_file:
-                async for message in communicate.stream():
-                    if message["type"] == "audio":
-                        audio_file.write(message["data"])
-                    elif message["type"] in ("WordBoundary", "SentenceBoundary"):
-                        chunk_bytes = len(message.get("text", "").encode("utf-8")) + 1
-                        processed_bytes = min(processed_bytes + chunk_bytes, total_bytes)
-                        progress.update(task_id, completed=processed_bytes)
+                for part in results:
+                    audio_file.write(part)
             progress.update(task_id, completed=total_bytes)
 
         return True
@@ -340,6 +434,8 @@ async def process_file(
     voice: str = TTS_VOICE,
     rate: str = TTS_RATE,
     move_done: Optional[bool] = None,
+    concurrency: int = TTS_CONCURRENCY,
+    debug: bool = TTS_DEBUG,
 ) -> bool:
     """Processes a single script: Text -> Audio -> ID3 Tag -> Telegram -> archive to Done/."""
     if move_done is None:
@@ -363,6 +459,8 @@ async def process_file(
             output_audio_path=output_mp3,
             voice=voice,
             rate=rate,
+            concurrency=concurrency,
+            debug=debug,
         )
         if not success:
             return False
@@ -407,7 +505,13 @@ async def process_file(
     return True
 
 
-async def process_all_new(skip_tg: bool = False, force: bool = False, move_done: Optional[bool] = None):
+async def process_all_new(
+    skip_tg: bool = False,
+    force: bool = False,
+    move_done: Optional[bool] = None,
+    concurrency: int = TTS_CONCURRENCY,
+    debug: bool = TTS_DEBUG,
+):
     """Processes pending scripts in SCRIPT_DIR (scripts already archived to Done/ are never touched)."""
     if move_done is None:
         move_done = MOVE_TO_DONE
@@ -428,7 +532,7 @@ async def process_all_new(skip_tg: bool = False, force: bool = False, move_done:
         # With archiving on, anything left in the inbox is pending (e.g. a failed upload to retry).
         # With archiving off, an existing MP3 means the episode was already handled.
         if force or move_done or not output_mp3.exists():
-            if await process_file(script, skip_tg=skip_tg, force=force, move_done=move_done):
+            if await process_file(script, skip_tg=skip_tg, force=force, move_done=move_done, concurrency=concurrency, debug=debug):
                 processed_count += 1
         else:
             console.print(f"[dim]⏩ Skipping already generated: {script.name}[/dim]")
@@ -436,7 +540,13 @@ async def process_all_new(skip_tg: bool = False, force: bool = False, move_done:
     console.print(f"\n[bold green]🎉 Done! Processed {processed_count} new episode(s).[/bold green]")
 
 
-async def watch_folder(poll_interval: int = 3, skip_tg: bool = False, move_done: Optional[bool] = None):
+async def watch_folder(
+    poll_interval: int = 3,
+    skip_tg: bool = False,
+    move_done: Optional[bool] = None,
+    concurrency: int = TTS_CONCURRENCY,
+    debug: bool = TTS_DEBUG,
+):
     """Watches SCRIPT_DIR (top level only, Done/ is ignored) for newly added or modified .txt files."""
     console.print(Panel(
         f"👀 Watching folder: [bold cyan]{SCRIPT_DIR.resolve()}[/bold cyan]\n"
@@ -468,13 +578,13 @@ async def watch_folder(poll_interval: int = 3, skip_tg: bool = False, move_done:
                     seen_mtimes[p] = mtime
                     if not await wait_until_stable(p):
                         continue
-                    await process_file(p, skip_tg=skip_tg, move_done=move_done)
+                    await process_file(p, skip_tg=skip_tg, move_done=move_done, concurrency=concurrency, debug=debug)
                 elif mtime > seen_mtimes[p]:
                     console.print(f"\n[bold yellow]📝 Script modified: {p.name}[/bold yellow]")
                     seen_mtimes[p] = mtime
                     if not await wait_until_stable(p):
                         continue
-                    await process_file(p, skip_tg=skip_tg, force=True, move_done=move_done)
+                    await process_file(p, skip_tg=skip_tg, force=True, move_done=move_done, concurrency=concurrency, debug=debug)
     except (KeyboardInterrupt, asyncio.CancelledError):
         console.print("\n[yellow]Watcher stopped by user.[/yellow]")
 
@@ -527,6 +637,10 @@ def main():
     for sub in (run_parser, all_parser, watch_parser):
         sub.add_argument("--move", action=argparse.BooleanOptionalAction, default=None,
                          help="Move processed scripts to Done/ (default: MOVE_TO_DONE from .env)")
+        sub.add_argument("--concurrency", type=int, default=TTS_CONCURRENCY,
+                         help=f"Number of parallel TTS workers (default: {TTS_CONCURRENCY})")
+        sub.add_argument("--debug", action=argparse.BooleanOptionalAction, default=TTS_DEBUG,
+                         help="Show detailed per-chunk synthesis progress and retry logs")
 
     args = parser.parse_args()
 
@@ -539,14 +653,14 @@ def main():
         if not file_path.is_file():
             console.print(f"[red]❌ File not found: {file_path}[/red]")
             sys.exit(1)
-        asyncio.run(process_file(file_path, skip_tg=args.no_tg, force=args.force, voice=args.voice, rate=args.rate, move_done=args.move))
+        asyncio.run(process_file(file_path, skip_tg=args.no_tg, force=args.force, voice=args.voice, rate=args.rate, move_done=args.move, concurrency=args.concurrency, debug=args.debug))
 
     elif args.command == "run-all":
-        asyncio.run(process_all_new(skip_tg=args.no_tg, force=args.force, move_done=args.move))
+        asyncio.run(process_all_new(skip_tg=args.no_tg, force=args.force, move_done=args.move, concurrency=args.concurrency, debug=args.debug))
 
     elif args.command == "watch":
         try:
-            asyncio.run(watch_folder(poll_interval=args.interval, skip_tg=args.no_tg, move_done=args.move))
+            asyncio.run(watch_folder(poll_interval=args.interval, skip_tg=args.no_tg, move_done=args.move, concurrency=args.concurrency, debug=args.debug))
         except KeyboardInterrupt:
             console.print("\n[yellow]Watcher stopped by user.[/yellow]")
 

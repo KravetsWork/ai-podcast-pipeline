@@ -23,8 +23,9 @@ copy .env.example .env          # Linux/macOS: cp .env.example .env
 Put scripts in `Podcasts/Script/`. Name them simply `Episode title.txt`: the episode number is assigned automatically as the highest number in `Podcasts/Audio/` + 1, and the MP3 becomes `N. Episode title.mp3` (the script is archived under the same name). A manual prefix such as `5. Episode title.txt` is still respected.
 
 ```bash
-python pipeline.py run-all                          # process all new scripts
+python pipeline.py run-all                          # process all new scripts (per-chunk debug log on by default)
 python pipeline.py run "Podcasts/Script/1. Title.txt" --no-tg
+python pipeline.py run-all --concurrency 2          # override parallel TTS worker count
 python pipeline.py watch                            # process files as they appear
 python pipeline.py list-voices --filter uk
 ```
@@ -40,7 +41,7 @@ Archiving is controlled by `MOVE_TO_DONE` / `DONE_DIR` in `.env`, or per run wit
 
 ## Configuration
 
-All preferences are set in `.env` (copy [.env.example](.env.example), which is preconfigured with a Ukrainian voice): voice, rate, pitch, ID3 defaults, folders, Telegram caption/hashtags,
+All preferences are set in `.env` (copy [.env.example](.env.example), which is preconfigured with a Ukrainian voice): voice, rate, pitch, parallel synthesis settings (`TTS_CONCURRENCY` / `TTS_RETRIES` / `TTS_DEBUG`), ID3 defaults, folders, Telegram caption/hashtags,
 and optional `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID`. Without Telegram credentials the pipeline only generates and tags audio locally.
 
 ## Privacy
