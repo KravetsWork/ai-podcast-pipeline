@@ -480,7 +480,10 @@ def main():
         asyncio.run(process_all_new(skip_tg=args.no_tg, force=args.force, move_done=args.move))
 
     elif args.command == "watch":
-        asyncio.run(watch_folder(poll_interval=args.interval, skip_tg=args.no_tg, move_done=args.move))
+        try:
+            asyncio.run(watch_folder(poll_interval=args.interval, skip_tg=args.no_tg, move_done=args.move))
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Watcher stopped by user.[/yellow]")
 
     elif args.command == "list-voices":
         asyncio.run(list_voices(lang_filter=args.filter))
