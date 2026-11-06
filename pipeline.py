@@ -441,7 +441,7 @@ def main():
     run_parser = subparsers.add_parser("run", help="Process a single script file")
     run_parser.add_argument("file", type=str, help="Path to the script .txt file")
     run_parser.add_argument("--voice", type=str, default=TTS_VOICE, help="TTS voice override")
-    run_parser.add_argument("--rate", type=str, default=TTS_RATE, help="Speed rate (e.g. +10%)")
+    run_parser.add_argument("--rate", type=str, default=TTS_RATE, help="Speed rate (e.g. +10%%)")
     run_parser.add_argument("--no-tg", action="store_true", help="Skip Telegram broadcast")
     run_parser.add_argument("--force", action="store_true", help="Overwrite existing audio")
 
