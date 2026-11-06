@@ -1,0 +1,26 @@
+# Virtual environments
+venv/
+.venv/
+env/
+Podcasts/venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Secrets
+.env
+
+# Private content: scripts and generated audio are never published
+Podcasts/Script/*
+!Podcasts/Script/.gitkeep
+Podcasts/Audio/*
+!Podcasts/Audio/.gitkeep
+Podcasts/*.txt
+assets/
+*.mp3
+*.wav
+
+# System files
+.DS_Store
+Thumbs.db
