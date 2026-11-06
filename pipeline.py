@@ -28,6 +28,15 @@ from dotenv import load_dotenv
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
+from rich.progress import (
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    BarColumn,
+    TaskProgressColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
+)
 
 import edge_tts
 from mutagen.mp3 import MP3
@@ -101,7 +110,7 @@ async def synthesize_speech(
     pitch: str = TTS_PITCH,
     volume: str = TTS_VOLUME,
 ) -> bool:
-    """Synthesizes text into MP3 using edge-tts."""
+    """Synthesizes text into MP3 using edge-tts with real-time percentage progress."""
     try:
         with open(text_path, "r", encoding="utf-8") as f:
             text = f.read().strip()
@@ -118,9 +127,43 @@ async def synthesize_speech(
             pitch=pitch,
             volume=volume,
         )
-        await communicate.save(str(output_audio_path))
+
+        # Convert internal chunk generator to a list to calculate exact byte total
+        chunks = list(communicate.texts)
+        communicate.texts = iter(chunks)
+        total_bytes = max(sum(len(c) for c in chunks), 1)
+        processed_bytes = 0
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[bold green]{task.description}"),
+            BarColumn(bar_width=25),
+            TaskProgressColumn(),
+            TextColumn("[dim]• Elapsed:[/dim]"),
+            TimeElapsedColumn(),
+            TextColumn("[dim]• ETA:[/dim]"),
+            TimeRemainingColumn(),
+            console=console,
+        ) as progress:
+            task_id = progress.add_task(f"Synthesizing speech with {voice}...", total=total_bytes)
+            with open(output_audio_path, "wb") as audio_file:
+                async for message in communicate.stream():
+                    if message["type"] == "audio":
+                        audio_file.write(message["data"])
+                    elif message["type"] in ("WordBoundary", "SentenceBoundary"):
+                        chunk_bytes = len(message.get("text", "").encode("utf-8")) + 1
+                        processed_bytes = min(processed_bytes + chunk_bytes, total_bytes)
+                        progress.update(task_id, completed=processed_bytes)
+            progress.update(task_id, completed=total_bytes)
+
         return True
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        if output_audio_path.exists():
+            output_audio_path.unlink(missing_ok=True)
+        raise
     except Exception as e:
+        if output_audio_path.exists():
+            output_audio_path.unlink(missing_ok=True)
         console.print(f"[red]❌ Synthesis error for {text_path.name}: {e}[/red]")
         return False
 
@@ -315,15 +358,14 @@ async def process_file(
     if output_mp3.exists() and not force:
         console.print(f"[yellow]⏩ Audio already exists: {output_mp3.name} (use --force to overwrite)[/yellow]")
     else:
-        with console.status(f"[bold green]Synthesizing speech with {voice}..."):
-            success = await synthesize_speech(
-                text_path=script_path,
-                output_audio_path=output_mp3,
-                voice=voice,
-                rate=rate,
-            )
-            if not success:
-                return False
+        success = await synthesize_speech(
+            text_path=script_path,
+            output_audio_path=output_mp3,
+            voice=voice,
+            rate=rate,
+        )
+        if not success:
+            return False
         console.print(f"[green]✅ Audio generated: {output_mp3.name}[/green]")
 
     # Tagging
@@ -433,7 +475,7 @@ async def watch_folder(poll_interval: int = 3, skip_tg: bool = False, move_done:
                     if not await wait_until_stable(p):
                         continue
                     await process_file(p, skip_tg=skip_tg, force=True, move_done=move_done)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, asyncio.CancelledError):
         console.print("\n[yellow]Watcher stopped by user.[/yellow]")
 
 
@@ -513,5 +555,9 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Operation cancelled by user.[/yellow]")
+        sys.exit(0)
 
