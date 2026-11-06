@@ -29,6 +29,15 @@ python pipeline.py watch                            # process files as they appe
 python pipeline.py list-voices --filter uk
 ```
 
+## Workflow
+
+1. Drop a new script into `Podcasts/Script/`.
+2. `run-all` (or `watch`) processes only the scripts currently in that folder: synthesize, tag, send to Telegram.
+3. On success the script (and its optional same-name cover `.jpg`/`.png`) is moved to `Podcasts/Script/Done/`, so the next run sees only new scripts. If the Telegram upload fails, the script stays in place and is retried on the next run.
+
+Archiving is controlled by `MOVE_TO_DONE` / `DONE_DIR` in `.env`, or per run with `--move` / `--no-move`.
+`watch` waits until a file has finished being written, ignores `Done/`, and re-processes a script if you edit it.
+
 ## Configuration
 
 All preferences are set in `.env` (copy [.env.example](.env.example), which is preconfigured with a Ukrainian voice): voice, rate, pitch, ID3 defaults, folders, Telegram caption/hashtags,

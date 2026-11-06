@@ -14,6 +14,9 @@ __pycache__/
 # Private content: scripts and generated audio are never published
 Podcasts/Script/*
 !Podcasts/Script/.gitkeep
+!Podcasts/Script/Done/
+Podcasts/Script/Done/*
+!Podcasts/Script/Done/.gitkeep
 Podcasts/Audio/*
 !Podcasts/Audio/.gitkeep
 Podcasts/*.txt
