@@ -229,8 +229,31 @@ def list_inbox_scripts() -> list:
     return sorted(p for p in SCRIPT_DIR.glob("*.txt") if p.is_file())
 
 
-def archive_script(script_path: Path) -> Optional[Path]:
-    """Moves a processed script (and its companion cover image) into DONE_DIR."""
+def resolve_episode(script_path: Path) -> Tuple[Optional[str], str, Path]:
+    """
+    Returns (track, title, output_mp3) for a script.
+    A leading number in the filename is respected. Otherwise the episode number is assigned
+    automatically as (highest number found in AUDIO_DIR) + 1, and the MP3 is named '<N>. <title>.mp3'.
+    An unnumbered script whose title already has an MP3 reuses that MP3 (and number).
+    """
+    track, title = parse_filename(script_path)
+    if track:
+        return track, title, AUDIO_DIR / f"{script_path.stem}.mp3"
+
+    highest = 0
+    if AUDIO_DIR.exists():
+        for mp3 in AUDIO_DIR.glob("*.mp3"):
+            n, t = parse_filename(mp3)
+            if n:
+                highest = max(highest, int(n))
+            if t == title:
+                return (n, title, mp3) if n else (None, title, mp3)
+    track = str(highest + 1)
+    return track, title, AUDIO_DIR / f"{track}. {title}.mp3"
+
+
+def archive_script(script_path: Path, new_stem: Optional[str] = None) -> Optional[Path]:
+    """Moves a processed script (and its companion cover image) into DONE_DIR, optionally renaming it."""
     try:
         DONE_DIR.mkdir(parents=True, exist_ok=True)
         moved_script = None
@@ -238,9 +261,10 @@ def archive_script(script_path: Path) -> Optional[Path]:
         for src in candidates:
             if not src.is_file():
                 continue
-            dest = DONE_DIR / src.name
+            name = f"{new_stem}{src.suffix}" if new_stem else src.name
+            dest = DONE_DIR / name
             if dest.exists():
-                dest = DONE_DIR / f"{src.stem}.{time.strftime('%Y%m%d-%H%M%S')}{src.suffix}"
+                dest = DONE_DIR / f"{dest.stem}.{time.strftime('%Y%m%d-%H%M%S')}{src.suffix}"
             shutil.move(str(src), str(dest))
             if src == script_path:
                 moved_script = dest
@@ -277,8 +301,7 @@ async def process_file(
     """Processes a single script: Text -> Audio -> ID3 Tag -> Telegram -> archive to Done/."""
     if move_done is None:
         move_done = MOVE_TO_DONE
-    track, title = parse_filename(script_path)
-    output_mp3 = AUDIO_DIR / f"{script_path.stem}.mp3"
+    track, title, output_mp3 = resolve_episode(script_path)
 
     console.print(Panel(
         f"[bold cyan]Episode:[/bold cyan] {script_path.name}\n"
@@ -337,7 +360,7 @@ async def process_file(
         return False
 
     if move_done:
-        archive_script(script_path)
+        archive_script(script_path, new_stem=output_mp3.stem)
 
     return True
 
@@ -359,7 +382,7 @@ async def process_all_new(skip_tg: bool = False, force: bool = False, move_done:
 
     processed_count = 0
     for script in scripts:
-        output_mp3 = AUDIO_DIR / f"{script.stem}.mp3"
+        output_mp3 = resolve_episode(script)[2]
         # With archiving on, anything left in the inbox is pending (e.g. a failed upload to retry).
         # With archiving off, an existing MP3 means the episode was already handled.
         if force or move_done or not output_mp3.exists():

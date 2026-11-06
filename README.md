@@ -20,7 +20,7 @@ pip install -r requirements.txt
 copy .env.example .env          # Linux/macOS: cp .env.example .env
 ```
 
-Put scripts in `Podcasts/Script/`, named like `1. Episode title.txt` (the number becomes the track number).
+Put scripts in `Podcasts/Script/`. Name them simply `Episode title.txt`: the episode number is assigned automatically as the highest number in `Podcasts/Audio/` + 1, and the MP3 becomes `N. Episode title.mp3` (the script is archived under the same name). A manual prefix such as `5. Episode title.txt` is still respected.
 
 ```bash
 python pipeline.py run-all                          # process all new scripts
