@@ -30,20 +30,20 @@ flowchart LR
 
 ```text
 $ python pipeline.py run-all
-Found 2 script(s) in Podcasts/Script/ (running up to 4 in parallel)
-╭────────────────────────────── 🎙️ Processing Episode ──────────────────────────────╮
-│ Episode: The Sound of Rain.txt                                                    │
-│ Title: The Sound of Rain                                                          │
-│ Track: Auto (assigned on completion)                                              │
-│ Voice: en-US-AndrewMultilingualNeural                                             │
-╰───────────────────────────────────────────────────────────────────────────────────╯
+Found 1 script(s) in Podcasts/Script/ (running up to 4 in parallel)
+╭─────────────────────────────── Processing Episode ───────────────────────────────╮
+│ Episode: The Sound of Rain.txt                                                   │
+│ Title: The Sound of Rain                                                         │
+│ Track: Auto (assigned on completion)                                             │
+│ Voice: en-US-AndrewMultilingualNeural                                            │
+╰──────────────────────────────────────────────────────────────────────────────────╯
 ⠋ The Sound of Rain.txt [1/1] ━━━━━━━━━━━━━━━━━━━━━━━━━ 100% 228 KB • Elapsed: 0:00:08 • ETA: 0:00:00
 ✅ Audio generated: 1. The Sound of Rain.mp3
 🏷️ ID3 metadata tagged: 1. The Sound of Rain.mp3
 🚀 Successfully broadcasted to Telegram (Chat: @my_podcast_channel)
 📁 Archived to Podcasts/Script/Done/
 
-🎉 Done! Processed 2 new episode(s).
+🎉 Done! Processed 1 new episode(s).
 ```
 
 ## 🚀 Quickstart
