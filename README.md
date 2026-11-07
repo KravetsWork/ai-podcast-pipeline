@@ -49,7 +49,7 @@ Found 2 script(s) in Podcasts/Script/ (running up to 4 in parallel)
 ## 🚀 Quickstart
 
 ```bash
-git clone https://github.com/workkravets/ai-podcast-pipeline.git
+git clone https://github.com/KravetsWork/ai-podcast-pipeline.git
 cd ai-podcast-pipeline
 python -m venv .venv
 .venv\Scripts\activate          # Linux/macOS: source .venv/bin/activate
