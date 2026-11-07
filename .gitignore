@@ -20,9 +20,17 @@ Podcasts/Script/Done/*
 Podcasts/Audio/*
 !Podcasts/Audio/.gitkeep
 Podcasts/*.txt
-assets/
 *.mp3
+*.part
+*.tmp
 *.wav
+
+# Tooling caches and build output
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
 
 # System files
 .DS_Store
